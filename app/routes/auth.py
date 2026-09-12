@@ -49,7 +49,7 @@ def login(payload: LoginRequest):
     # causing a TypeError: a bytes-like object is required, not 'str'
     is_valid = bcrypt.checkpw(
         payload.password.encode("utf-8"),
-        user.password_hash
+        user.password_hash.encode("utf-8")
     )
 
     if not is_valid:
