@@ -1,0 +1,1 @@
+"""AFH-DEMO application package."""
