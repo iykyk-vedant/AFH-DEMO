@@ -19,7 +19,8 @@ def reserve_stock(item_id: str, quantity: int) -> Dict[str, Any]:
     if quantity <= 0:
         raise ValueError("Reservation quantity must be positive")
 
-    # BUG (INC-004): Directly indexing dictionary throws unhandled KeyError for unlisted items
+    if item_id not in STOCK_CATALOG:
+        return {"success": False, "reason": "Item not found in catalog", "item_id": item_id}
     available = STOCK_CATALOG[item_id]
 
     if available < quantity:
