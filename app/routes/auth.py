@@ -47,10 +47,10 @@ def login(payload: LoginRequest):
     # BUG (Line 42): bcrypt.checkpw expects both arguments to be bytes.
     # payload.password is encoded to bytes, but user.password_hash is a str,
     # causing a TypeError: a bytes-like object is required, not 'str'
-    is_valid = bcrypt.checkpw(
-        payload.password.encode("utf-8"),
-        user.password_hash.encode("utf-8")
-    )
+        is_valid = bcrypt.checkpw(
+            payload.password.encode("utf-8"),
+            user.password_hash.encode("utf-8")
+        )
 
     if not is_valid:
         raise HTTPException(
