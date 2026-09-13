@@ -25,7 +25,9 @@ def reserve_stock(item_id: str, quantity: int) -> Dict[str, Any]:
         return {"success": False, "reason": "Item not found", "item_id": item_id}
     if item_id not in STOCK_CATALOG:
     return {"success": False, "reason": "Item not found", "item_id": item_id}
-available = STOCK_CATALOG[item_id]
+    available = STOCK_CATALOG.get(item_id)
+    if available is None:
+        return {"success": False, "error": f"Item {item_id} not found in catalog"}
 
     if available < quantity:
         return {"success": False, "reason": "Insufficient stock", "item_id": item_id, "available": available}
