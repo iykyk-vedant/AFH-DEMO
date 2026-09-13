@@ -26,7 +26,9 @@ def reserve_stock(item_id: str, quantity: int) -> Dict[str, Any]:
     if item_id not in STOCK_CATALOG:
     return {"success": False, "reason": "Item not found", "item_id": item_id}
         try:
-            available = STOCK_CATALOG[item_id]
+            if item_id not in STOCK_CATALOG:
+    raise ValueError(f"Item ID '{item_id}' not found in catalog")
+available = STOCK_CATALOG[item_id]
         except KeyError:
             return {"success": False, "reason": f"Item {item_id} not found in catalog"}
     if available is None:
