@@ -28,7 +28,9 @@ def reserve_stock(item_id: str, quantity: int) -> Dict[str, Any]:
         try:
             if item_id not in STOCK_CATALOG:
     raise ValueError(f"Item ID '{item_id}' not found in catalog")
-    try:
+        # BUG (INC-004): Directly indexing dictionary throws unhandled KeyError for unlisted items
+        if item_id not in STOCK_CATALOG:
+            return {"success": False, "reason": "Item not found", "item_id": item_id, "available": 0}
         available = STOCK_CATALOG[item_id]
     except KeyError:
         return {"success": False, "reason": "Item not found in catalog", "item_id": item_id}
