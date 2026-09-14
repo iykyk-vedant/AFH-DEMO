@@ -11,6 +11,9 @@ def prepare_webhook_target(target_url: str) -> str:
     # BUG (INC-008): Fails to prepend https:// when partner registers URL without protocol scheme
     parsed = urlparse(target_url)
     if not parsed.scheme:
-        raise ValueError(f"Invalid URL '{target_url}': No scheme supplied. Perhaps you meant https://{target_url}?")
+        # Automatically prepend https:// when scheme is missing
+        target_url = f"https://{target_url}"
+        parsed = urlparse(target_url)
+    return target_urlrget_url}?")
 
     return target_url.strip()
