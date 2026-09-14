@@ -15,4 +15,4 @@ def format_audit_log(event_id: uuid.UUID, action: str, actor: str) -> str:
         "action": action,
         "actor": actor,
     }
-    return json.dumps(event_payload)
+    return json.dumps(event_payload, default=str)
