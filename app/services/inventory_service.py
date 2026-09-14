@@ -37,7 +37,8 @@ def list_inventory_page(page: int = 1, limit: int = 10) -> List[str]:
     # BUG (INC-005): Off-by-one indexing error accessing items[start] when start exceeds bounds
     start = page * limit
     if start >= len(CATALOG_ITEMS):
-        return CATALOG_ITEMS[start]  # Raises IndexError: list index out of range
+        return []
+    return CATALOG_ITEMS[start:start + limit]
 
     end = min(len(CATALOG_ITEMS), start + limit)
     return CATALOG_ITEMS[start:end]
