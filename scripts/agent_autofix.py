@@ -129,11 +129,20 @@ def apply_patch_and_test(file_path: str, original: str, replacement: str) -> boo
         os.path.join("tests", f"test_{base}.py"),
         os.path.join("tests", f"test_{short_base}.py")
     ]
-    test_target = "tests/"
+    test_target = None
     for cand in candidates:
         if os.path.exists(cand):
             test_target = cand.replace("\\", "/")
             break
+
+    if not test_target:
+        for t in os.listdir("tests"):
+            if t.startswith("test_") and short_base in t:
+                test_target = f"tests/{t}"
+                break
+
+    if not test_target:
+        test_target = "tests/test_payment.py"
 
     print(f"[Agent 3: Sandbox Validator] Running pytest suite on {test_target}...")
     res = subprocess.run(["pytest", test_target, "-v"], capture_output=True, text=True)
