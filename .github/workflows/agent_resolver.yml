@@ -6,17 +6,17 @@ on:
   workflow_dispatch:
     inputs:
       issue_number:
-        description: 'Issue number to resolve'
+        description: "Issue number to resolve"
         required: true
-        default: '1'
+        default: "1"
       issue_title:
-        description: 'Issue title'
+        description: "Issue title"
         required: true
-        default: 'INC-002: Double discount deduction applied during checkout calculation'
+        default: "INC-002: Double discount deduction applied during checkout calculation"
       issue_body:
-        description: 'Issue body'
+        description: "Issue body"
         required: false
-        default: 'Discount is deducted twice from subtotal in app/services/payment_service.py'
+        default: "Discount is deducted twice from subtotal in app/services/payment_service.py"
 
 permissions:
   contents: write
@@ -58,11 +58,11 @@ jobs:
       - name: Run Multi-Agent Resolution & Pytest Validation
         id: agent_fix
         env:
-          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT || 'https://agentathon-2026-resource.openai.azure.com/' }}
+          AZURE_OPENAI_ENDPOINT: "https://agentathon-2026-resource.openai.azure.com/"
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number || '1' }}
-          ISSUE_TITLE: ${{ github.event.issue.title || inputs.issue_title || 'INC-002: Double discount deduction' }}
-          ISSUE_BODY: ${{ github.event.issue.body || inputs.issue_body || 'Discount is deducted twice' }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          ISSUE_TITLE: ${{ github.event.issue.title || inputs.issue_title }}
+          ISSUE_BODY: ${{ github.event.issue.body || inputs.issue_body }}
         run: |
           python scripts/agent_autofix.py
 
@@ -70,8 +70,8 @@ jobs:
         if: success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE_NUM: ${{ github.event.issue.number || inputs.issue_number || '1' }}
-          ISSUE_TIT: ${{ github.event.issue.title || inputs.issue_title || 'Incident Fix' }}
+          ISSUE_NUM: ${{ github.event.issue.number || inputs.issue_number }}
+          ISSUE_TIT: ${{ github.event.issue.title || inputs.issue_title }}
         run: |
           git config user.name "azure-foundry-sre-agent[bot]"
           git config user.email "azure-foundry-sre-agent@users.noreply.github.com"

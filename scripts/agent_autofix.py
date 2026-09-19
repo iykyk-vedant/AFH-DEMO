@@ -19,9 +19,9 @@ API_VERSION = "2024-08-01-preview"
 PLANNER_MODEL = os.getenv("AZURE_DEPLOYMENT_PLANNER", "gpt-5-mini")
 CRITIC_MODEL = os.getenv("AZURE_DEPLOYMENT_CRITIC", "grok-4-20-reasoning")
 
-ISSUE_NUMBER = os.getenv("ISSUE_NUMBER", "1")
-ISSUE_TITLE = os.getenv("ISSUE_TITLE", "Test Incident")
-ISSUE_BODY = os.getenv("ISSUE_BODY", "")
+ISSUE_NUMBER = os.getenv("ISSUE_NUMBER") or "1"
+ISSUE_TITLE = os.getenv("ISSUE_TITLE") or "INC-002: Double discount deduction applied during checkout calculation"
+ISSUE_BODY = os.getenv("ISSUE_BODY") or "Discount is deducted twice from subtotal in app/services/payment_service.py"
 
 
 def call_azure_llm(deployment: str, messages: List[Dict[str, str]], temperature: float = 0.2) -> str:
