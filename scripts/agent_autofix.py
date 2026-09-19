@@ -96,32 +96,20 @@ Target File Contents:
     return clean_json_response(content)
 
 
+def parse_pytest_summary(output: str) -> Dict[str, str]:
+    """Extract individual test statuses from pytest output."""
+    results = {}
+    for line in output.splitlines():
+        if " PASSED" in line:
+            parts = line.split(" PASSED")
+            results[parts[0].strip()] = "PASSED"
+        elif " FAILED" in line:
+            parts = line.split(" FAILED")
+            results[parts[0].strip()] = "FAILED"
+    return results
+
+
 def apply_patch_and_test(file_path: str, original: str, replacement: str) -> bool:
-    print(f"\n[Agent 3: Sandbox Validator] Applying patch to {file_path}...")
-    if not os.path.exists(file_path):
-        print(f"Error: File {file_path} does not exist.")
-        return False
-
-    with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    # Normalize line endings
-    norm_content = content.replace("\r\n", "\n")
-    norm_orig = original.replace("\r\n", "\n")
-    norm_repl = replacement.replace("\r\n", "\n")
-
-    if norm_orig not in norm_content:
-        print(f"Warning: exact snippet not found in {file_path}. Trying stripped match...")
-        if norm_orig.strip() not in norm_content:
-            print("Failed to match snippet.")
-            return False
-        norm_orig = norm_orig.strip()
-        norm_repl = norm_repl.strip()
-
-    patched = norm_content.replace(norm_orig, norm_repl, 1)
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(patched)
-
     print("[Agent 3: Sandbox Validator] Selecting relevant test file...")
     base = os.path.basename(file_path).replace(".py", "")
     short_base = base.replace("_service", "").replace("_router", "")
@@ -144,15 +132,65 @@ def apply_patch_and_test(file_path: str, original: str, replacement: str) -> boo
     if not test_target:
         test_target = "tests/test_payment.py"
 
-    print(f"[Agent 3: Sandbox Validator] Running pytest suite on {test_target}...")
+    # Step A: Baseline Test Run (Before Patch)
+    print(f"[Agent 3: Sandbox Validator] Running baseline tests on {test_target} (before patch)...")
+    base_res = subprocess.run(["pytest", test_target, "-v"], capture_output=True, text=True)
+    before_statuses = parse_pytest_summary(base_res.stdout)
+    before_passed = sum(1 for s in before_statuses.values() if s == "PASSED")
+    print(f" -> Baseline: {before_passed} passed, {len(before_statuses) - before_passed} failed.")
+
+    # Step B: Apply Patch
+    if not os.path.exists(file_path):
+        print(f"Error: File {file_path} does not exist.")
+        return False
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    norm_content = content.replace("\r\n", "\n")
+    norm_orig = original.replace("\r\n", "\n")
+    norm_repl = replacement.replace("\r\n", "\n")
+
+    if norm_orig not in norm_content:
+        print(f"Warning: exact snippet not found in {file_path}. Trying stripped match...")
+        if norm_orig.strip() not in norm_content:
+            print("Failed to match snippet.")
+            return False
+        norm_orig = norm_orig.strip()
+        norm_repl = norm_repl.strip()
+
+    patched = norm_content.replace(norm_orig, norm_repl, 1)
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(patched)
+
+    # Step C: After Patch Test Run
+    print(f"[Agent 3: Sandbox Validator] Running tests on {test_target} (after patch)...")
     res = subprocess.run(["pytest", test_target, "-v"], capture_output=True, text=True)
     print(res.stdout)
+    after_statuses = parse_pytest_summary(res.stdout)
+    after_passed = sum(1 for s in after_statuses.values() if s == "PASSED")
+    print(f" -> After patch: {after_passed} passed, {len(after_statuses) - after_passed} failed.")
+
+    # Check 1: 100% pass
     if res.returncode == 0:
-        print(f"✅ Pytest on {test_target} passed successfully!")
+        print(f"✅ Pytest on {test_target} passed with 100% success!")
         return True
+
+    # Check 2: Regression & Improvement Detection
+    # Did passing tests increase?
+    newly_passed = [t for t, s in after_statuses.items() if s == "PASSED" and before_statuses.get(t) != "PASSED"]
+    # Did any previously passing test break?
+    regressions = [t for t, s in before_statuses.items() if s == "PASSED" and after_statuses.get(t) != "PASSED"]
+
+    if newly_passed and not regressions:
+        print(f"✅ [Regression Detector] Target incident fix confirmed! Newly passing test(s): {newly_passed}")
+        print("✅ Zero regressions detected on existing passing tests.")
+        return True
+    elif regressions:
+        print(f"❌ [Regression Detector] Regressions detected! Tests that broke: {regressions}")
+        return False
     else:
-        print(f"❌ Pytest on {test_target} failed with exit code", res.returncode)
-        print(res.stderr)
+        print("❌ [Regression Detector] Patch did not resolve any failing test.")
         return False
 
 
