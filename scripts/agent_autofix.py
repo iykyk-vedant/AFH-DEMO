@@ -122,16 +122,27 @@ def apply_patch_and_test(file_path: str, original: str, replacement: str) -> boo
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(patched)
 
-    print("[Agent 3: Sandbox Validator] Running pytest suite...")
-    # Determine test file
+    print("[Agent 3: Sandbox Validator] Selecting relevant test file...")
+    base = os.path.basename(file_path).replace(".py", "")
+    short_base = base.replace("_service", "").replace("_router", "")
+    candidates = [
+        os.path.join("tests", f"test_{base}.py"),
+        os.path.join("tests", f"test_{short_base}.py")
+    ]
     test_target = "tests/"
+    for cand in candidates:
+        if os.path.exists(cand):
+            test_target = cand.replace("\\", "/")
+            break
+
+    print(f"[Agent 3: Sandbox Validator] Running pytest suite on {test_target}...")
     res = subprocess.run(["pytest", test_target, "-v"], capture_output=True, text=True)
     print(res.stdout)
     if res.returncode == 0:
-        print("✅ Pytest passed successfully!")
+        print(f"✅ Pytest on {test_target} passed successfully!")
         return True
     else:
-        print("❌ Pytest failed with exit code", res.returncode)
+        print(f"❌ Pytest on {test_target} failed with exit code", res.returncode)
         print(res.stderr)
         return False
 
