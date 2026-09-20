@@ -12,6 +12,11 @@ import subprocess
 from typing import Dict, Any, List, Optional
 import requests
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 # Fallback default endpoint if not in env
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "https://agentathon-2026-resource.openai.azure.com/").rstrip("/")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
@@ -70,7 +75,7 @@ Output strictly in JSON:
     return clean_json_response(content)
 
 
-def run_fix_planner(critic_plan: Dict[str, Any], file_path: str, file_content: str) -> Dict[str, Any]:
+def run_fix_planner(critic_plan: Dict[str, Any], file_path: str, file_content: str, test_content: Optional[str] = None, feedback: Optional[str] = None) -> Dict[str, Any]:
     print(f"\n[Agent 2: Fix Planner ({PLANNER_MODEL})] Formulating surgical replacement patch...")
     system_prompt = """You are a Principal Software Engineer.
 Generate the MINIMAL, SURGICAL patch to resolve the bug.
@@ -89,6 +94,23 @@ Target File Contents:
 ```python
 {file_content}
 ```"""
+    if test_content:
+        user_prompt += f"""
+
+Target Test Suite Requirements (Ensure your fix satisfies these tests):
+```python
+{test_content}
+```"""
+    if feedback:
+        user_prompt += f"""
+
+⚠️ PREVIOUS CANDIDATE PATCH FAILED PYTEST REGRESSION CHECK:
+```
+{feedback}
+```
+Analyze the test failure above carefully (e.g. check which assertion failed and what return value or formula was expected).
+Regenerate a surgical patch that satisfies both the root cause fix AND all test assertions."""
+
     content = call_azure_llm(PLANNER_MODEL, [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
@@ -109,7 +131,7 @@ def parse_pytest_summary(output: str) -> Dict[str, str]:
     return results
 
 
-def apply_patch_and_test(file_path: str, original: str, replacement: str) -> bool:
+def apply_patch_and_test(file_path: str, original: str, replacement: str) -> tuple[bool, str]:
     print("[Agent 3: Sandbox Validator] Selecting relevant test file...")
     base = os.path.basename(file_path).replace(".py", "")
     short_base = base.replace("_service", "").replace("_router", "")
@@ -123,7 +145,7 @@ def apply_patch_and_test(file_path: str, original: str, replacement: str) -> boo
             test_target = cand.replace("\\", "/")
             break
 
-    if not test_target:
+    if not test_target and os.path.exists("tests"):
         for t in os.listdir("tests"):
             if t.startswith("test_") and short_base in t:
                 test_target = f"tests/{t}"
@@ -142,7 +164,7 @@ def apply_patch_and_test(file_path: str, original: str, replacement: str) -> boo
     # Step B: Apply Patch
     if not os.path.exists(file_path):
         print(f"Error: File {file_path} does not exist.")
-        return False
+        return False, f"File {file_path} does not exist."
 
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
@@ -155,7 +177,7 @@ def apply_patch_and_test(file_path: str, original: str, replacement: str) -> boo
         print(f"Warning: exact snippet not found in {file_path}. Trying stripped match...")
         if norm_orig.strip() not in norm_content:
             print("Failed to match snippet.")
-            return False
+            return False, f"Failed to match original snippet in {file_path}."
         norm_orig = norm_orig.strip()
         norm_repl = norm_repl.strip()
 
@@ -174,24 +196,22 @@ def apply_patch_and_test(file_path: str, original: str, replacement: str) -> boo
     # Check 1: 100% pass
     if res.returncode == 0:
         print(f"✅ Pytest on {test_target} passed with 100% success!")
-        return True
+        return True, res.stdout
 
     # Check 2: Regression & Improvement Detection
-    # Did passing tests increase?
     newly_passed = [t for t, s in after_statuses.items() if s == "PASSED" and before_statuses.get(t) != "PASSED"]
-    # Did any previously passing test break?
     regressions = [t for t, s in before_statuses.items() if s == "PASSED" and after_statuses.get(t) != "PASSED"]
 
     if newly_passed and not regressions:
         print(f"✅ [Regression Detector] Target incident fix confirmed! Newly passing test(s): {newly_passed}")
         print("✅ Zero regressions detected on existing passing tests.")
-        return True
+        return True, res.stdout
     elif regressions:
         print(f"❌ [Regression Detector] Regressions detected! Tests that broke: {regressions}")
-        return False
+        return False, res.stdout
     else:
         print("❌ [Regression Detector] Patch did not resolve any failing test.")
-        return False
+        return False, res.stdout
 
 
 def main():
@@ -208,7 +228,6 @@ def main():
 
     target_file = rec_files[0]
     if not os.path.exists(target_file):
-        # search for basename
         base = os.path.basename(target_file)
         for root, _, files in os.walk("app"):
             if base in files:
@@ -218,18 +237,44 @@ def main():
     with open(target_file, "r", encoding="utf-8") as f:
         file_content = f.read()
 
-    # Step 2: Fix Planning
-    fix = run_fix_planner(critic_plan, target_file, file_content)
+    # Discover associated test file if present
+    base_name = os.path.basename(target_file).replace(".py", "")
+    short_base = base_name.replace("_service", "").replace("_router", "")
+    test_content = None
+    for cand in [os.path.join("tests", f"test_{base_name}.py"), os.path.join("tests", f"test_{short_base}.py")]:
+        if os.path.exists(cand):
+            with open(cand, "r", encoding="utf-8") as tf:
+                test_content = tf.read()
+            print(f"[Context Engine] Loaded test specification from {cand}")
+            break
 
-    # Step 3: Sandbox Testing
-    passed = apply_patch_and_test(
-        target_file,
-        fix.get("original_snippet", ""),
-        fix.get("replacement_snippet", "")
-    )
+    # Step 2 & 3: Fix Planning & Sandbox Testing with Self-Healing Loop
+    max_attempts = 3
+    attempt = 1
+    passed = False
+    test_feedback = None
+    fix = {}
+
+    while attempt <= max_attempts and not passed:
+        print(f"\n--- [Iteration {attempt}/{max_attempts}] SRE Agent Resolution Attempt ---")
+        if attempt > 1:
+            with open(target_file, "w", encoding="utf-8") as f:
+                f.write(file_content)
+
+        fix = run_fix_planner(critic_plan, target_file, file_content, test_content=test_content, feedback=test_feedback)
+        passed, test_output = apply_patch_and_test(
+            target_file,
+            fix.get("original_snippet", ""),
+            fix.get("replacement_snippet", "")
+        )
+
+        if not passed:
+            print(f"⚠️ Attempt {attempt} failed validation. Triggering self-correction feedback loop...")
+            test_feedback = test_output
+            attempt += 1
 
     if not passed:
-        print("Sandbox testing failed. Exiting with failure.")
+        print("❌ All self-healing attempts exhausted. Safety Gate engaged.")
         sys.exit(1)
 
     # Step 4: Write resolution report for PR
