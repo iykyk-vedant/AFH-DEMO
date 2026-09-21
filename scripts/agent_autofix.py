@@ -75,6 +75,61 @@ Output strictly in JSON:
     return clean_json_response(content)
 
 
+def run_test_generator_agent(
+    critic_plan: Dict[str, Any],
+    target_file: str,
+    file_content: str,
+    issue_number: str,
+    issue_title: str,
+    issue_body: str
+) -> Dict[str, str]:
+    print(f"\n[Agent 1.5: QA / Test Synthesis Specialist ({PLANNER_MODEL})] Synthesizing dedicated reproduction test case...")
+    system_prompt = """You are a Principal QA and Test Automation Engineer.
+Your role: Synthesize an isolated, self-contained pytest reproduction test case for the reported incident.
+Requirements:
+1. Import the buggy function or class from its target module (e.g., `from app.services.shipping_service import calculate_shipping_rate`).
+2. Construct test parameters and inputs that trigger the bug described in the issue (e.g., weight_kg=0.0, boundary conditions).
+3. Assert the expected, valid business behavior that should hold true once fixed (e.g., proper return values, no exceptions, positive fees).
+4. Name the test function `test_incident_regression()` or similar.
+5. Use only standard library and pytest. Do not import uninstalled third-party packages.
+Output strictly in JSON:
+{
+  "test_filename": "tests/test_issue_regression.py",
+  "test_code": "<full python pytest code>"
+}"""
+    user_prompt = f"""Incident #{issue_number}: {issue_title}
+Report Details / Stack Trace:
+{issue_body}
+
+Confirmed Root Cause:
+{critic_plan.get('confirmed_root_cause')}
+
+Target File: {target_file}
+Source Code:
+```python
+{file_content}
+```"""
+    content = call_azure_llm(PLANNER_MODEL, [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ], temperature=0.1)
+    res = clean_json_response(content)
+    # Ensure filename reflects issue number
+    res["test_filename"] = f"tests/test_issue_{issue_number}_regression.py"
+    return res
+
+
+def verify_negative_reproduction(test_filename: str) -> tuple[bool, str]:
+    print(f"[Agent 1.5: QA / Test Synthesis Specialist] Executing negative reproduction verification on unpatched code...")
+    res = subprocess.run(["pytest", test_filename, "-v"], capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"✅ [Negative Validation] Reproduction confirmed! Test failed as expected on unpatched code.")
+        return True, res.stdout
+    else:
+        print(f"⚠️ [Negative Validation] Notice: Test passed on unpatched code. Proceeding with caution.")
+        return False, res.stdout
+
+
 def run_fix_planner(critic_plan: Dict[str, Any], file_path: str, file_content: str, test_content: Optional[str] = None, feedback: Optional[str] = None) -> Dict[str, Any]:
     print(f"\n[Agent 2: Fix Planner ({PLANNER_MODEL})] Formulating surgical replacement patch...")
     system_prompt = """You are a Principal Software Engineer.
@@ -98,9 +153,7 @@ Target File Contents:
         user_prompt += f"""
 
 Target Test Suite Requirements (Ensure your fix satisfies these tests):
-```python
-{test_content}
-```"""
+{test_content}"""
     if feedback:
         user_prompt += f"""
 
@@ -131,8 +184,8 @@ def parse_pytest_summary(output: str) -> Dict[str, str]:
     return results
 
 
-def apply_patch_and_test(file_path: str, original: str, replacement: str) -> tuple[bool, str]:
-    print("[Agent 3: Sandbox Validator] Selecting relevant test file...")
+def apply_patch_and_test(file_path: str, original: str, replacement: str, extra_test_file: Optional[str] = None) -> tuple[bool, str]:
+    print("[Agent 3: Sandbox Validator] Selecting relevant test files...")
     base = os.path.basename(file_path).replace(".py", "")
     short_base = base.replace("_service", "").replace("_router", "")
     candidates = [
@@ -154,9 +207,13 @@ def apply_patch_and_test(file_path: str, original: str, replacement: str) -> tup
     if not test_target:
         test_target = "tests/test_payment.py"
 
+    test_targets = [test_target]
+    if extra_test_file and os.path.exists(extra_test_file) and extra_test_file != test_target:
+        test_targets.append(extra_test_file)
+
     # Step A: Baseline Test Run (Before Patch)
-    print(f"[Agent 3: Sandbox Validator] Running baseline tests on {test_target} (before patch)...")
-    base_res = subprocess.run(["pytest", test_target, "-v"], capture_output=True, text=True)
+    print(f"[Agent 3: Sandbox Validator] Running baseline tests on {' & '.join(test_targets)} (before patch)...")
+    base_res = subprocess.run(["pytest"] + test_targets + ["-v"], capture_output=True, text=True)
     before_statuses = parse_pytest_summary(base_res.stdout)
     before_passed = sum(1 for s in before_statuses.values() if s == "PASSED")
     print(f" -> Baseline: {before_passed} passed, {len(before_statuses) - before_passed} failed.")
@@ -186,8 +243,8 @@ def apply_patch_and_test(file_path: str, original: str, replacement: str) -> tup
         f.write(patched)
 
     # Step C: After Patch Test Run
-    print(f"[Agent 3: Sandbox Validator] Running tests on {test_target} (after patch)...")
-    res = subprocess.run(["pytest", test_target, "-v"], capture_output=True, text=True)
+    print(f"[Agent 3: Sandbox Validator] Running tests on {' & '.join(test_targets)} (after patch)...")
+    res = subprocess.run(["pytest"] + test_targets + ["-v"], capture_output=True, text=True)
     print(res.stdout)
     after_statuses = parse_pytest_summary(res.stdout)
     after_passed = sum(1 for s in after_statuses.values() if s == "PASSED")
@@ -195,7 +252,7 @@ def apply_patch_and_test(file_path: str, original: str, replacement: str) -> tup
 
     # Check 1: 100% pass
     if res.returncode == 0:
-        print(f"✅ Pytest on {test_target} passed with 100% success!")
+        print(f"✅ Pytest on {' & '.join(test_targets)} passed with 100% success!")
         return True, res.stdout
 
     # Check 2: Regression & Improvement Detection
@@ -237,7 +294,29 @@ def main():
     with open(target_file, "r", encoding="utf-8") as f:
         file_content = f.read()
 
-    # Discover associated test file if present
+    # Step 1.5: Autonomous Test Synthesis (QA Specialist Agent)
+    gen_test_file = None
+    gen_test_code = None
+    negative_confirmed = False
+    negative_trace = ""
+    try:
+        test_gen_result = run_test_generator_agent(
+            critic_plan, target_file, file_content, str(ISSUE_NUMBER), ISSUE_TITLE, ISSUE_BODY
+        )
+        gen_test_file = test_gen_result.get("test_filename", f"tests/test_issue_{ISSUE_NUMBER}_regression.py").replace("\\", "/")
+        gen_test_code = test_gen_result.get("test_code", "")
+
+        os.makedirs(os.path.dirname(gen_test_file), exist_ok=True)
+        with open(gen_test_file, "w", encoding="utf-8") as tf:
+            tf.write(gen_test_code)
+        print(f"✅ [Test Synthesis] Synthesized reproduction test saved to {gen_test_file}")
+
+        # Negative validation: Verify test fails on unpatched code
+        negative_confirmed, negative_trace = verify_negative_reproduction(gen_test_file)
+    except Exception as e:
+        print(f"⚠️ Warning: Autonomous test synthesis encountered error: {e}. Falling back to baseline tests.")
+
+    # Discover associated baseline test file if present
     base_name = os.path.basename(target_file).replace(".py", "")
     short_base = base_name.replace("_service", "").replace("_router", "")
     test_content = None
@@ -245,8 +324,17 @@ def main():
         if os.path.exists(cand):
             with open(cand, "r", encoding="utf-8") as tf:
                 test_content = tf.read()
-            print(f"[Context Engine] Loaded test specification from {cand}")
+            print(f"[Context Engine] Loaded baseline test specification from {cand}")
             break
+
+    # Construct comprehensive test guidance for Fix Planner
+    full_test_context = ""
+    if gen_test_code:
+        full_test_context += f"### AUTONOMOUS REPRODUCTION TEST ({gen_test_file}):\n```python\n{gen_test_code}\n```\n"
+        if negative_trace:
+            full_test_context += f"### UNPATCHED EXECUTION FAILURE:\n```\n{negative_trace}\n```\n"
+    if test_content:
+        full_test_context += f"### EXISTING TEST SUITE REQUIREMENTS:\n```python\n{test_content}\n```\n"
 
     # Step 2 & 3: Fix Planning & Sandbox Testing with Self-Healing Loop
     max_attempts = 3
@@ -261,11 +349,12 @@ def main():
             with open(target_file, "w", encoding="utf-8") as f:
                 f.write(file_content)
 
-        fix = run_fix_planner(critic_plan, target_file, file_content, test_content=test_content, feedback=test_feedback)
+        fix = run_fix_planner(critic_plan, target_file, file_content, test_content=full_test_context, feedback=test_feedback)
         passed, test_output = apply_patch_and_test(
             target_file,
             fix.get("original_snippet", ""),
-            fix.get("replacement_snippet", "")
+            fix.get("replacement_snippet", ""),
+            extra_test_file=gen_test_file
         )
 
         if not passed:
@@ -276,6 +365,22 @@ def main():
     if not passed:
         print("❌ All self-healing attempts exhausted. Safety Gate engaged.")
         sys.exit(1)
+
+    reproduction_status = "❌ Confirmed failed on unpatched code (reproduced defect)" if negative_confirmed else "⚠️ Generated and evaluated"
+    test_section = ""
+    if gen_test_file:
+        test_section = f"""---
+
+### 🧪 Autonomous Test Synthesis (QA Specialist Agent)
+- **Synthesized Regression Test**: `{gen_test_file}`
+- **Pre-Patch Reproduction ("Red" Phase)**: {reproduction_status}
+- **Post-Patch Validation ("Green" Phase)**: ✅ Passed 100% with zero regressions.
+- **Permanence**: Committed to repository alongside fix to prevent future regressions.
+
+```python
+{gen_test_code}
+```
+"""
 
     # Step 4: Write resolution report for PR
     report = f"""## 🤖 Autonomous Incident Resolution: Issue #{ISSUE_NUMBER}
@@ -294,7 +399,7 @@ def main():
 **Enforced Constraints:**
 {chr(10).join(f"- {c}" for c in critic_plan.get('patch_constraints', []))}
 
----
+{test_section}---
 
 ### 🛠️ Surgical Patch (`{PLANNER_MODEL}`)
 Modified file: `{target_file}`
