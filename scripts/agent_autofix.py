@@ -194,22 +194,42 @@ Source Code:
 # ==============================================================================
 def run_knowledge_retriever_agent(target_file: str, error_type: str) -> Dict[str, Any]:
     print(f"\n[Agent 4: Knowledge Retriever (Azure Cosmos DB Graph)] Querying incident history & blast radius...")
-    # Check if local graph cache exists or Cosmos DB Gremlin is reachable
-    cache_path = os.path.join("memory", "graph_cache.json")
     retrieved_context = "No previous identical incident recorded in graph. Initializing zero-shot repair context."
-    if os.path.exists(cache_path):
-        try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            matches = [item for item in data.get("nodes", []) if error_type.lower() in str(item).lower()]
-            if matches:
-                retrieved_context = f"Found {len(matches)} historical incident pattern(s) in Graph Store for {error_type}."
-        except Exception:
-            pass
+    cosmos_cloud_status = "OFFLINE"
+    
+    # Query live Azure Cosmos DB Gremlin Cloud
+    try:
+        from memory.graph_store import graph_memory
+        if graph_memory._gremlin_client:
+            vertices = graph_memory._gremlin_client.submit("g.V().hasLabel('Incident').valueMap(true)").all().result()
+            if vertices:
+                cosmos_cloud_status = f"CONNECTED (Azure Cosmos DB: {len(vertices)} incident vertices online)"
+                matches = [v for v in vertices if any(error_type.lower() in str(val).lower() for val in v.values())]
+                if matches:
+                    retrieved_context = f"Azure Cosmos DB Match: Found {len(matches)} historical incident pattern(s) in Graph Store."
+                else:
+                    retrieved_context = f"Azure Cosmos DB Active: {len(vertices)} historical vertices indexed in cloud graph."
+    except Exception as e:
+        print(f" -> Cosmos DB live query note: {e}")
 
-    print(f" -> Graph Memory Status: {retrieved_context}")
+    # Fallback to local cache if no cloud match
+    if "Found" not in retrieved_context:
+        cache_path = os.path.join("memory", "graph_cache.json")
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                matches = [item for item in data if error_type.lower() in str(item).lower()]
+                if matches:
+                    retrieved_context = f"Found {len(matches)} historical incident pattern(s) in Graph Store for {error_type}."
+            except Exception:
+                pass
+
+    print(f" -> Azure Cosmos DB Graph Status: {cosmos_cloud_status}")
+    print(f" -> Historical Context: {retrieved_context}")
     return {
         "graph_memory_status": "ONLINE",
+        "cosmos_cloud_status": cosmos_cloud_status,
         "historical_context": retrieved_context,
         "blast_radius_prediction": f"Low risk isolated to {os.path.basename(target_file)}"
     }
