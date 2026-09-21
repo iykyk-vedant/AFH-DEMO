@@ -18,6 +18,7 @@ import os
 import sys
 import json
 import re
+import uuid
 import subprocess
 from typing import Dict, Any, List, Optional, Tuple
 import requests
@@ -51,6 +52,12 @@ MODEL_VALIDATION_QA = os.getenv("AZURE_DEPLOYMENT_TEST_SYNTHESIS", "Kimi-K2.7-Co
 MODEL_SYNTHESIS = os.getenv("AZURE_DEPLOYMENT_SYNTHESIS", "gpt-5-mini")
 MODEL_RISK_SCORER = os.getenv("AZURE_DEPLOYMENT_RISK_SCORER", "Phi-4-reasoning")
 MODEL_FALLBACK = os.getenv("AZURE_DEPLOYMENT_FALLBACK", "gpt-5.4-mini")
+
+# Azure AI Foundry Dynamic Sessions (Cloud MicroVM Sandbox Pool)
+AZURE_DYNAMIC_SESSIONS_ENDPOINT = os.getenv(
+    "AZURE_DYNAMIC_SESSIONS_ENDPOINT",
+    "https://eastus2.dynamicsessions.io/subscriptions/ced6251e-3b52-4cb0-9abb-4a37595d5e43/resourceGroups/rg-vedantgharat37-0149/sessionPools/foundry-agent-sandbox"
+)
 
 ISSUE_NUMBER = os.getenv("ISSUE_NUMBER") or "1"
 ISSUE_TITLE = os.getenv("ISSUE_TITLE") or "INC-002: Double discount deduction applied during checkout calculation"
@@ -351,23 +358,176 @@ Source Code:
     return res
 
 
+def get_azure_dynamic_sessions_token() -> Optional[str]:
+    """Acquires Entra ID OAuth token for Azure Dynamic Sessions."""
+    env_token = os.getenv("AZURE_DYNAMIC_SESSIONS_TOKEN") or os.getenv("AZURE_BEARER_TOKEN")
+    if env_token:
+        return env_token.strip()
+
+    # If Managed Identity or Service Principal is present
+    if os.getenv("AZURE_CLIENT_ID") or os.getenv("IDENTITY_HEADER"):
+        try:
+            from azure.identity import DefaultAzureCredential
+            cred = DefaultAzureCredential()
+            tok = cred.get_token("https://dynamicsessions.io/.default")
+            if tok and tok.token:
+                return tok.token
+        except Exception:
+            pass
+
+    # Azure Developer CLI fallback for local environments
+    try:
+        out = subprocess.check_output(
+            "azd auth token --scope https://dynamicsessions.io/.default",
+            shell=True,
+            stderr=subprocess.DEVNULL
+        ).decode("utf-8").strip()
+        if out.startswith("eyJ"):
+            return out
+    except Exception:
+        pass
+
+    try:
+        from azure.identity import DefaultAzureCredential
+        cred = DefaultAzureCredential()
+        tok = cred.get_token("https://dynamicsessions.io/.default")
+        if tok and tok.token:
+            return tok.token
+    except Exception:
+        pass
+
+    return None
+
+
+def run_tests_in_azure_dynamic_sessions(
+    target_tests: List[str],
+    timeout_seconds: int = 30
+) -> Tuple[bool, str, Dict[str, str]]:
+    """
+    Dispatches test suite directly to Azure AI Foundry Dynamic Sessions microVM in East US 2.
+    ZERO local execution: local subprocess fallback is strictly disabled per user mandate.
+    """
+    token = get_azure_dynamic_sessions_token()
+    if not token:
+        raise RuntimeError(
+            "Azure AI Foundry Dynamic Sessions authentication failed: Unable to acquire Entra ID OAuth token. "
+            "Local execution is strictly disabled ('dont want any thing local'). "
+            "Please configure Azure credentials (az login, azd auth login, or set AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID)."
+        )
+
+    file_map: Dict[str, str] = {}
+    if os.path.exists("app"):
+        for root, _, files in os.walk("app"):
+            for f in files:
+                if f.endswith(".py"):
+                    full_p = os.path.join(root, f)
+                    rel_p = os.path.relpath(full_p, ".").replace("\\", "/")
+                    try:
+                        with open(full_p, "r", encoding="utf-8") as fp:
+                            file_map[rel_p] = fp.read()
+                    except Exception:
+                        pass
+
+    if os.path.exists("tests"):
+        for root, _, files in os.walk("tests"):
+            for f in files:
+                if f.endswith(".py"):
+                    full_p = os.path.join(root, f)
+                    rel_p = os.path.relpath(full_p, ".").replace("\\", "/")
+                    try:
+                        with open(full_p, "r", encoding="utf-8") as fp:
+                            file_map[rel_p] = fp.read()
+                    except Exception:
+                        pass
+
+    session_id = str(uuid.uuid4())
+    execute_url = f"{AZURE_DYNAMIC_SESSIONS_ENDPOINT.rstrip('/')}/code/execute?api-version=2024-02-02-preview&identifier={session_id}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    py_targets = [t.replace("\\", "/") for t in target_tests]
+    runner_code = f"""import os, sys, pytest
+
+files = {json.dumps(file_map)}
+for path, content in files.items():
+    dirname = os.path.dirname(path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+sys.path.insert(0, os.getcwd())
+test_args = {json.dumps(py_targets)} + ["-v", "--tb=short", "--color=no"]
+ret = pytest.main(test_args)
+print(f"\\n__PYTEST_EXIT_CODE__:{{int(ret)}}")
+"""
+
+    payload = {
+        "properties": {
+            "codeInputType": "inline",
+            "executionType": "synchronous",
+            "code": runner_code
+        }
+    }
+
+    try:
+        print(f"[Azure Dynamic Sessions] Submitting test payload to microVM in East US 2 (Session: {session_id[:8]}...)...")
+    except Exception:
+        pass
+
+    resp = requests.post(execute_url, json=payload, headers=headers, timeout=timeout_seconds)
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Azure AI Foundry Dynamic Sessions API returned HTTP {resp.status_code}: {resp.text[:200]}. "
+            "Local execution is strictly disabled."
+        )
+
+    data = resp.json()
+    props = data.get("properties", {})
+    stdout = props.get("stdout", "")
+    stderr = props.get("stderr", "")
+    status = props.get("status", "Success")
+    exec_ms = props.get("executionTimeInMilliseconds", 0)
+
+    exit_code = 1
+    if "__PYTEST_EXIT_CODE__:0" in stdout:
+        exit_code = 0
+    elif "__PYTEST_EXIT_CODE__:" in stdout:
+        try:
+            exit_code = int(stdout.split("__PYTEST_EXIT_CODE__:")[1].split()[0])
+        except Exception:
+            exit_code = 1
+
+    passed = (exit_code == 0 and status == "Success")
+    try:
+        print(f"[Azure Dynamic Sessions] Execution completed in cloud microVM ({exec_ms}ms) - Status: {status} - Passed: {passed}")
+    except Exception:
+        pass
+
+    statuses = parse_pytest_summary(stdout)
+    return passed, stdout, statuses
+
+
 def verify_negative_reproduction(test_filename: str) -> Tuple[bool, str]:
-    print(f"[Agent 7: Validation Agent] Executing negative reproduction verification on unpatched code...")
-    res = subprocess.run(["pytest", test_filename, "-v"], capture_output=True, text=True)
-    if res.returncode != 0:
-        print(f"✅ [Negative Validation] Reproduction confirmed! Test failed as expected on unpatched code.")
-        return True, res.stdout
+    print(f"[Agent 7: Validation Agent] Executing negative reproduction verification in Azure Dynamic Sessions microVM...")
+    passed, stdout, _ = run_tests_in_azure_dynamic_sessions([test_filename])
+    if not passed:
+        print(f"✅ [Negative Validation] Reproduction confirmed! Test failed as expected on unpatched code in cloud microVM.")
+        return True, stdout
     else:
-        print(f"⚠️ [Negative Validation] Notice: Test passed on unpatched code.")
-        return False, res.stdout
+        print(f"⚠️ [Negative Validation] Notice: Test passed on unpatched code in cloud microVM.")
+        return False, stdout
 
 
 # ==============================================================================
-# AGENT 8: DOCKER SANDBOX TESTING (Isolated Pytest & Regression Detector)
+# AGENT 8: DOCKER SANDBOX TESTING (Azure AI Foundry Dynamic Sessions MicroVM)
 # ==============================================================================
 def parse_pytest_summary(output: str) -> Dict[str, str]:
     results = {}
-    for line in output.splitlines():
+    for raw_line in output.splitlines():
+        line = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', raw_line)
         if " PASSED" in line:
             parts = line.split(" PASSED")
             results[parts[0].strip()] = "PASSED"
@@ -378,7 +538,7 @@ def parse_pytest_summary(output: str) -> Dict[str, str]:
 
 
 def run_sandbox_testing(file_path: str, original: str, replacement: str, extra_test_file: Optional[str] = None) -> Tuple[bool, str]:
-    print("\n[Agent 8: Docker Sandbox Testing] Selecting isolated test suites...")
+    print("\n[Agent 8: Azure Dynamic Sessions Sandbox] Selecting isolated test suites...")
     base = os.path.basename(file_path).replace(".py", "")
     short_base = base.replace("_service", "").replace("_router", "")
     candidates = [
@@ -404,14 +564,13 @@ def run_sandbox_testing(file_path: str, original: str, replacement: str, extra_t
     if extra_test_file and os.path.exists(extra_test_file) and extra_test_file != test_target:
         test_targets.append(extra_test_file)
 
-    # Step A: Baseline
-    print(f"[Sandbox] Running baseline tests on {' & '.join(test_targets)} (before patch)...")
-    base_res = subprocess.run(["pytest"] + test_targets + ["-v"], capture_output=True, text=True)
-    before_statuses = parse_pytest_summary(base_res.stdout)
+    # Step A: Baseline (Executed in Azure AI Foundry Dynamic Sessions MicroVM)
+    print(f"[Sandbox] Running baseline tests on {' & '.join(test_targets)} in Azure Dynamic Sessions microVM (before patch)...")
+    _, base_stdout, before_statuses = run_tests_in_azure_dynamic_sessions(test_targets)
     before_passed = sum(1 for s in before_statuses.values() if s == "PASSED")
-    print(f" -> Baseline: {before_passed} passed, {len(before_statuses) - before_passed} failed.")
+    print(f" -> Baseline (Azure MicroVM): {before_passed} passed, {len(before_statuses) - before_passed} failed.")
 
-    # Step B: Apply patch
+    # Step B: Apply patch to workspace file
     if not os.path.exists(file_path):
         return False, f"File {file_path} does not exist."
 
@@ -432,30 +591,29 @@ def run_sandbox_testing(file_path: str, original: str, replacement: str, extra_t
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(patched)
 
-    # Step C: After Patch Verification
-    print(f"[Sandbox] Running regression tests on {' & '.join(test_targets)} (after patch)...")
-    res = subprocess.run(["pytest"] + test_targets + ["-v"], capture_output=True, text=True)
-    print(res.stdout)
-    after_statuses = parse_pytest_summary(res.stdout)
+    # Step C: After Patch Verification (Executed in Azure AI Foundry Dynamic Sessions MicroVM)
+    print(f"[Sandbox] Running regression tests on {' & '.join(test_targets)} in Azure Dynamic Sessions microVM (after patch)...")
+    passed, after_stdout, after_statuses = run_tests_in_azure_dynamic_sessions(test_targets)
+    print(after_stdout)
     after_passed = sum(1 for s in after_statuses.values() if s == "PASSED")
-    print(f" -> After patch: {after_passed} passed, {len(after_statuses) - after_passed} failed.")
+    print(f" -> After patch (Azure MicroVM): {after_passed} passed, {len(after_statuses) - after_passed} failed.")
 
-    if res.returncode == 0:
-        print(f"✅ Pytest on {' & '.join(test_targets)} passed with 100% success!")
-        return True, res.stdout
+    if passed:
+        print(f"✅ Azure Dynamic Sessions: Pytest on {' & '.join(test_targets)} passed with 100% success!")
+        return True, after_stdout
 
     newly_passed = [t for t, s in after_statuses.items() if s == "PASSED" and before_statuses.get(t) != "PASSED"]
     regressions = [t for t, s in before_statuses.items() if s == "PASSED" and after_statuses.get(t) != "PASSED"]
 
     if newly_passed and not regressions:
         print(f"✅ Target incident fix confirmed! Newly passing test(s): {newly_passed}")
-        return True, res.stdout
+        return True, after_stdout
     elif regressions:
         print(f"❌ Regressions detected! Tests that broke: {regressions}")
-        return False, res.stdout
+        return False, after_stdout
     else:
         print("❌ Patch did not resolve any failing test.")
-        return False, res.stdout
+        return False, after_stdout
 
 
 # ==============================================================================
@@ -534,7 +692,8 @@ Modified file: `{target_file}`
 ---
 
 ### 🧪 Validation Results
-- **Sandbox Test Runner**: `pytest`
+- **Sandbox Test Runner**: `Azure AI Foundry Dynamic Sessions (Cloud Container MicroVM - East US 2)`
+- **MicroVM Isolation**: Sub-second remote Linux microVM pool (Zero local compute)
 - **Result**: ✅ Passed 100% of tests with zero regressions.
 - **Risk Score**: `LOW` (Automated PR Approved)
 

@@ -41,7 +41,7 @@ jobs:
       - name: Install Dependencies
         run: |
           pip install -r requirements.txt
-          pip install pytest requests
+          pip install pytest requests azure-identity python-dotenv
 
       - name: Acknowledge Issue on GitHub
         if: github.event_name == 'issues'
@@ -52,14 +52,19 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: "🤖 **Azure AI Foundry SRE Multi-Agent System** detected this issue!\n\nInitiating autonomous diagnosis:\n1. 🧐 **Critic Agent** (`grok-4-20-reasoning`): Deep reasoning & safety constraints.\n2. 🛠️ **Fix Planner Agent** (`gpt-5-mini`): Surgical diff patch generation.\n3. 🧪 **Sandbox Validator**: Isolated pytest regression testing."
+              body: "?? **Azure AI Foundry SRE Multi-Agent System** detected this issue!\n\nInitiating autonomous diagnosis:\n1. ?? **Critic Agent** (`grok-4-20-reasoning`): Deep reasoning & safety constraints.\n2. ??? **Fix Planner Agent** (`Codestral-2501`): Surgical diff patch generation.\n3. ?? **Azure Dynamic Sessions Sandbox**: Isolated cloud microVM regression testing in East US 2."
             })
 
-      - name: Run Multi-Agent Resolution & Pytest Validation
+      - name: Run Multi-Agent Resolution & Cloud Sandbox Validation
         id: agent_fix
         env:
           AZURE_OPENAI_ENDPOINT: "https://agentathon-2026-resource.openai.azure.com/"
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_DYNAMIC_SESSIONS_ENDPOINT: "https://eastus2.dynamicsessions.io/subscriptions/ced6251e-3b52-4cb0-9abb-4a37595d5e43/resourceGroups/rg-vedantgharat37-0149/sessionPools/foundry-agent-sandbox"
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_DYNAMIC_SESSIONS_TOKEN: ${{ secrets.AZURE_DYNAMIC_SESSIONS_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           ISSUE_TITLE: ${{ github.event.issue.title || inputs.issue_title }}
           ISSUE_BODY: ${{ github.event.issue.body || inputs.issue_body }}
@@ -78,7 +83,7 @@ jobs:
           BRANCH_NAME="fix/issue-${ISSUE_NUM}"
           git checkout -B "$BRANCH_NAME"
           git add .
-          git commit -m "fix: resolve issue #${ISSUE_NUM}"
+          git commit -m "fix: resolve issue #${ISSUE_NUM} via Azure Dynamic Sessions microVM"
           git push origin "$BRANCH_NAME" --force
           gh pr create --title "fix: Resolve #${ISSUE_NUM} - ${ISSUE_TIT}" \
                        --body-file resolution_report.md \
@@ -94,7 +99,7 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: "✅ **Autonomous Fix Verified!**\n\n- Targeted service `pytest` suite passed with zero regressions.\n- A verified Pull Request has been opened automatically."
+              body: "? **Autonomous Fix Verified in Cloud MicroVM!**\n\n- Targeted service test suite passed with zero regressions inside **Azure AI Foundry Dynamic Sessions** (East US 2).\n- A verified Pull Request has been opened automatically."
             })
 
       - name: Notify on Failure
@@ -106,5 +111,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: "⚠️ **Autonomous Fix Blocked by Safety Gate.**\n\nThe candidate fix did not pass the sandbox pytest suite or was flagged by the Critic Agent. Human review is requested."
+              body: "?? **Autonomous Fix Blocked by Safety Gate.**\n\nThe candidate fix did not pass the Azure Dynamic Sessions sandbox or was flagged by the Critic Agent. Human review is requested."
             })
