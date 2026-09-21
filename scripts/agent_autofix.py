@@ -22,6 +22,14 @@ import subprocess
 from typing import Dict, Any, List, Optional, Tuple
 import requests
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    if os.path.exists(r"d:\Microsoft fundry project\.env"):
+        load_dotenv(r"d:\Microsoft fundry project\.env")
+except ImportError:
+    pass
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -66,7 +74,7 @@ def call_azure_llm(deployment: str, messages: List[Dict[str, str]], temperature:
     
     # Reasoning and GPT-5 models manage temperature/tokens differently
     dep_lower = target_deployment.lower()
-    if "gpt-5" not in dep_lower and "o1" not in dep_lower and "o3" not in dep_lower and "thinking" not in dep_lower:
+    if not any(k in dep_lower for k in ["gpt-5", "o1", "o3", "thinking", "reasoning", "phi"]):
         payload["temperature"] = temperature
 
     try:
@@ -81,7 +89,7 @@ def call_azure_llm(deployment: str, messages: List[Dict[str, str]], temperature:
             print(f"⚠️ Warning: Model '{target_deployment}' call failed ({e}). Engaging fallback '{fallback}'...")
             fb_url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{fallback}/chat/completions?api-version={API_VERSION}"
             fb_payload: Dict[str, Any] = {"messages": messages}
-            if "gpt-5" not in fallback.lower():
+            if not any(k in fallback.lower() for k in ["gpt-5", "o1", "o3", "thinking", "reasoning", "phi"]):
                 fb_payload["temperature"] = temperature
             fb_resp = requests.post(fb_url, json=fb_payload, headers=headers, timeout=60)
             if fb_resp.status_code == 200:
