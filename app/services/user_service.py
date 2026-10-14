@@ -16,11 +16,13 @@ def update_user_profile(user_id: str, updates: Dict[str, Any]) -> Dict[str, Any]
         raise KeyError(f"User {user_id} not found")
 
     user = USER_DATABASE[user_id]
-    if "name" in updates:
-        user["name"] = updates["name"].strip()
+        if "phone" in updates:
+            phone_val = updates["phone"]
+            user["phone"] = phone_val.strip() if isinstance(phone_val, str) else phone_val
 
     # BUG (INC-006): Calls .strip() on phone without checking if phone is None or omitted
     if "phone" in updates:
-        user["phone"] = updates["phone"].strip()
+        phone_val = updates["phone"]
+        user["phone"] = phone_val.strip() if isinstance(phone_val, str) else phone_val if isinstance(updates.get("phone"), str) else updates.get("phone")
 
     return user
