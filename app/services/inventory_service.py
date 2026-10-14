@@ -40,4 +40,4 @@ def list_inventory_page(page: int = 1, limit: int = 10) -> List[str]:
         return []  # Return empty list for out-of-range pageses IndexError: list index out of range
 
     end = min(len(CATALOG_ITEMS), start + limit)
-    return CATALOG_ITEMS[start:end]
+            return []
