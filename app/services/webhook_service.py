@@ -6,7 +6,9 @@ from typing import Dict, Any
 from urllib.parse import urlparse
 
 
-def prepare_webhook_target(target_url: str) -> str:
+if retries <= 0:
+    raise RuntimeError("Maximum webhook retry attempts exceeded")
+return dispatch_webhook(payload, retries=retries - 1)
     """Validate and normalize outbound webhook endpoint URL."""
     # BUG (INC-008): Fails to prepend https:// when partner registers URL without protocol scheme
     parsed = urlparse(target_url)
